@@ -1,6 +1,7 @@
 import streamlit as st
 from pdf2image import convert_from_bytes
 import pytesseract
+from PIL import Image, ImageFilter, ImageEnhance
 import re
 import io
 import pandas as pd
@@ -12,6 +13,15 @@ st.title("現金領収書PDF → Excel 変換")
 st.caption("スキャンしたPDFをアップロードすると、日付・店名・金額・消費税8%を読み取ります。")
 
 
+# ── 画像前処理（OCR精度向上） ────────────────────────────────────
+def preprocess(img: Image.Image) -> Image.Image:
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = img.filter(ImageFilter.SHARPEN)
+    img = img.point(lambda x: 255 if x > 128 else 0, "1").convert("L")
+    return img
+
+
 # ── 和暦 → 西暦変換 ───────────────────────────────────────────────
 def wareki_to_seireki(era: str, year: int) -> int:
     table = {"令和": 2018, "平成": 1988, "昭和": 1925, "R": 2018, "H": 1988, "S": 1925}
@@ -21,18 +31,15 @@ def wareki_to_seireki(era: str, year: int) -> int:
 
 # ── 日付抽出 ──────────────────────────────────────────────────────
 def extract_date(text: str) -> str:
-    # 西暦 YYYY/MM/DD or YYYY-MM-DD or YYYY年MM月DD日
     m = re.search(r"(20\d{2})[/\-年](\d{1,2})[/\-月](\d{1,2})", text)
     if m:
         return f"{m.group(1)}/{int(m.group(2)):02d}/{int(m.group(3)):02d}"
 
-    # 令和/平成/昭和 N年M月D日
     m = re.search(r"(令和|平成|昭和)[\s　]*(\d{1,2})年[\s　]*(\d{1,2})月[\s　]*(\d{1,2})日", text)
     if m:
         y = wareki_to_seireki(m.group(1), int(m.group(2)))
         return f"{y}/{int(m.group(3)):02d}/{int(m.group(4)):02d}"
 
-    # R7.5.3 or R7/5/3 or H31.3.1
     m = re.search(r"([RrHhSs令平昭])[\s　]*(\d{1,2})[./](\d{1,2})[./](\d{1,2})", text)
     if m:
         era_map = {"r": "令和", "R": "令和", "h": "平成", "H": "平成", "s": "昭和", "S": "昭和",
@@ -41,7 +48,6 @@ def extract_date(text: str) -> str:
         y = wareki_to_seireki(era, int(m.group(2)))
         return f"{y}/{int(m.group(3)):02d}/{int(m.group(4)):02d}"
 
-    # 2桁年 25.5.3 → 2025
     m = re.search(r"\b(\d{2})[./](\d{1,2})[./](\d{1,2})\b", text)
     if m:
         y = 2000 + int(m.group(1))
@@ -52,7 +58,6 @@ def extract_date(text: str) -> str:
 
 # ── 金額抽出（合計金額） ──────────────────────────────────────────
 def extract_amount(text: str):
-    # 合計・お買上金額・税込合計・ご請求額 の後の数字を優先
     priority_patterns = [
         r"(?:合\s*計|お買上げ?金額|税込合計|ご請求金額|ご請求額|お支払[い]?金額)[\s　:：]*[¥￥]?\s*([\d,，]+)",
     ]
@@ -62,13 +67,11 @@ def extract_amount(text: str):
             vals = [int(v.replace(",", "").replace("，", "")) for v in matches]
             return max(vals)
 
-    # ¥ or ￥ に続く数字の最大値
     matches = re.findall(r"[¥￥]\s*([\d,，]+)", text)
     if matches:
         vals = [int(v.replace(",", "").replace("，", "")) for v in matches]
         return max(vals)
 
-    # 円 に続く/前の数字
     matches = re.findall(r"([\d,，]{3,})\s*円", text)
     if matches:
         vals = [int(v.replace(",", "").replace("，", "")) for v in matches]
@@ -131,7 +134,6 @@ def build_excel(df: pd.DataFrame) -> bytes:
             int(row["消費税8%"]) if pd.notna(row.get("消費税8%")) and row.get("消費税8%") != "" else None,
         ])
 
-    # 合計行
     n = len(df)
     ws.cell(row=n + 2, column=1, value="合計").font = Font(bold=True)
     ws.cell(row=n + 2, column=3, value=f"=SUM(C2:C{n+1})")
@@ -153,14 +155,18 @@ uploaded = st.file_uploader("PDFファイルをアップロード", type="pdf")
 if uploaded:
     with st.spinner("OCR処理中...（ページ数によって数十秒かかります）"):
         try:
-            images = convert_from_bytes(uploaded.read(), dpi=200)
+            images = convert_from_bytes(uploaded.read(), dpi=300)
         except Exception as e:
             st.error(f"PDF変換エラー: {e}")
             st.stop()
 
         records = []
         for i, img in enumerate(images):
-            text = pytesseract.image_to_string(img, lang="jpn")
+            img = preprocess(img)
+            text = pytesseract.image_to_string(
+                img, lang="jpn",
+                config="--psm 6 --oem 1"
+            )
             record = parse_receipt(text)
             records.append(record)
 
