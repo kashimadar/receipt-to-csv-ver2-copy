@@ -1,6 +1,5 @@
-
 streamlit
 pdf2image
-pytesseract
+google-generativeai
 openpyxl
 Pillow
