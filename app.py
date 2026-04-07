@@ -11,7 +11,7 @@ from PIL import Image
 
 # ── Gemini 設定 ───────────────────────────────────────────────────
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
 PROMPT = """この画像は日本の領収書またはレシートです。以下の情報を抽出してJSONで返してください。
 
