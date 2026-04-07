@@ -1,5 +1,5 @@
 streamlit
 pdf2image
-google-generativeai
+google-genai
 openpyxl
 Pillow
