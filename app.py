@@ -1,117 +1,48 @@
 import streamlit as st
 from pdf2image import convert_from_bytes
-import pytesseract
-from PIL import Image, ImageFilter, ImageEnhance
-import re
+import google.generativeai as genai
+import json
 import io
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, Alignment
+from PIL import Image
 
-st.set_page_config(page_title="現金領収書 → Excel", layout="wide")
-st.title("現金領収書PDF → Excel 変換")
-st.caption("スキャンしたPDFをアップロードすると、日付・店名・金額・消費税8%を読み取ります。")
+# ── Gemini 設定 ───────────────────────────────────────────────────
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-2.0-flash")
 
+PROMPT = """この画像は日本の領収書またはレシートです。以下の情報を抽出してJSONで返してください。
 
-# ── 画像前処理（OCR精度向上） ────────────────────────────────────
-def preprocess(img: Image.Image) -> Image.Image:
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = img.filter(ImageFilter.SHARPEN)
-    img = img.point(lambda x: 255 if x > 128 else 0, "1").convert("L")
-    return img
+{
+  "date": "YYYY/MM/DD形式の日付（和暦は西暦に変換。令和7年=2025年、令和6年=2024年、平成31年=2019年）",
+  "store": "店名または発行者名",
+  "amount": 合計金額（税込・数値のみ・カンマなし）,
+  "tax8": 消費税8%軽減税率分の税額（数値のみ。記載がない場合はnull）
+}
 
-
-# ── 和暦 → 西暦変換 ───────────────────────────────────────────────
-def wareki_to_seireki(era: str, year: int) -> int:
-    table = {"令和": 2018, "平成": 1988, "昭和": 1925, "R": 2018, "H": 1988, "S": 1925}
-    base = table.get(era, 2018)
-    return base + year
-
-
-# ── 日付抽出 ──────────────────────────────────────────────────────
-def extract_date(text: str) -> str:
-    m = re.search(r"(20\d{2})[/\-年](\d{1,2})[/\-月](\d{1,2})", text)
-    if m:
-        return f"{m.group(1)}/{int(m.group(2)):02d}/{int(m.group(3)):02d}"
-
-    m = re.search(r"(令和|平成|昭和)[\s　]*(\d{1,2})年[\s　]*(\d{1,2})月[\s　]*(\d{1,2})日", text)
-    if m:
-        y = wareki_to_seireki(m.group(1), int(m.group(2)))
-        return f"{y}/{int(m.group(3)):02d}/{int(m.group(4)):02d}"
-
-    m = re.search(r"([RrHhSs令平昭])[\s　]*(\d{1,2})[./](\d{1,2})[./](\d{1,2})", text)
-    if m:
-        era_map = {"r": "令和", "R": "令和", "h": "平成", "H": "平成", "s": "昭和", "S": "昭和",
-                   "令": "令和", "平": "平成", "昭": "昭和"}
-        era = era_map.get(m.group(1), "令和")
-        y = wareki_to_seireki(era, int(m.group(2)))
-        return f"{y}/{int(m.group(3)):02d}/{int(m.group(4)):02d}"
-
-    m = re.search(r"\b(\d{2})[./](\d{1,2})[./](\d{1,2})\b", text)
-    if m:
-        y = 2000 + int(m.group(1))
-        return f"{y}/{int(m.group(2)):02d}/{int(m.group(3)):02d}"
-
-    return ""
+注意：
+- 金額が読み取れない場合は null
+- 日付・店名が読み取れない場合は ""
+- JSONのみ返すこと（説明文・コードブロック不要）"""
 
 
-# ── 金額抽出（合計金額） ──────────────────────────────────────────
-def extract_amount(text: str):
-    priority_patterns = [
-        r"(?:合\s*計|お買上げ?金額|税込合計|ご請求金額|ご請求額|お支払[い]?金額)[\s　:：]*[¥￥]?\s*([\d,，]+)",
-    ]
-    for pat in priority_patterns:
-        matches = re.findall(pat, text)
-        if matches:
-            vals = [int(v.replace(",", "").replace("，", "")) for v in matches]
-            return max(vals)
-
-    matches = re.findall(r"[¥￥]\s*([\d,，]+)", text)
-    if matches:
-        vals = [int(v.replace(",", "").replace("，", "")) for v in matches]
-        return max(vals)
-
-    matches = re.findall(r"([\d,，]{3,})\s*円", text)
-    if matches:
-        vals = [int(v.replace(",", "").replace("，", "")) for v in matches]
-        return max(vals)
-
-    return None
-
-
-# ── 消費税8%抽出 ─────────────────────────────────────────────────
-def extract_tax8(text: str):
-    patterns = [
-        r"(?:8[%％]対象消費税|消費税8[%％]|軽減税率.*?消費税|8[%％]税額)[\s　:：]*[¥￥]?\s*([\d,，]+)",
-        r"(?:8[%％]消費税|税8[%％])[\s　:：]*[¥￥]?\s*([\d,，]+)",
-        r"[※＊\*].*?消費税[\s　]*[¥￥]?\s*([\d,，]+)",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text)
-        if m:
-            return int(m.group(1).replace(",", "").replace("，", ""))
-    return None
-
-
-# ── 店名抽出 ──────────────────────────────────────────────────────
-def extract_store(text: str) -> str:
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    skip = re.compile(r"^[\d\s　¥￥※＊\*\-\=\~\|]{3,}$|領収書|receipt|御領収|Tel|TEL|FAX|〒|郵便|ご利用", re.IGNORECASE)
-    for line in lines[:10]:
-        if len(line) >= 2 and not skip.search(line) and not re.match(r"^\d", line):
-            return line
-    return ""
-
-
-# ── 1ページ分のパース ─────────────────────────────────────────────
-def parse_receipt(text: str) -> dict:
-    return {
-        "日付": extract_date(text),
-        "店名": extract_store(text),
-        "金額": extract_amount(text),
-        "消費税8%": extract_tax8(text),
-    }
+# ── Geminiで1ページ分を解析 ───────────────────────────────────────
+def analyze_receipt(img: Image.Image) -> dict:
+    try:
+        response = model.generate_content([PROMPT, img])
+        text = response.text.strip()
+        # コードブロックが含まれる場合に除去
+        text = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+        return {
+            "日付": data.get("date", ""),
+            "店名": data.get("store", ""),
+            "金額": data.get("amount"),
+            "消費税8%": data.get("tax8"),
+        }
+    except Exception as e:
+        return {"日付": "", "店名": f"読み取りエラー: {e}", "金額": None, "消費税8%": None}
 
 
 # ── Excel生成 ─────────────────────────────────────────────────────
@@ -150,25 +81,27 @@ def build_excel(df: pd.DataFrame) -> bytes:
 
 
 # ── メインUI ─────────────────────────────────────────────────────
+st.set_page_config(page_title="現金領収書 → Excel", layout="wide")
+st.title("現金領収書PDF → Excel 変換")
+st.caption("スキャンしたPDFをアップロードすると、日付・店名・金額・消費税8%を読み取ります。")
+
 uploaded = st.file_uploader("PDFファイルをアップロード", type="pdf")
 
 if uploaded:
-    with st.spinner("OCR処理中...（ページ数によって数十秒かかります）"):
+    with st.spinner("読み取り中..."):
         try:
-            images = convert_from_bytes(uploaded.read(), dpi=300)
+            images = convert_from_bytes(uploaded.read(), dpi=200)
         except Exception as e:
             st.error(f"PDF変換エラー: {e}")
             st.stop()
 
         records = []
+        bar = st.progress(0, text="解析中...")
         for i, img in enumerate(images):
-            img = preprocess(img)
-            text = pytesseract.image_to_string(
-                img, lang="jpn",
-                config="--psm 6 --oem 1"
-            )
-            record = parse_receipt(text)
+            record = analyze_receipt(img)
             records.append(record)
+            bar.progress((i + 1) / len(images), text=f"{i+1} / {len(images)} ページ完了")
+        bar.empty()
 
     st.success(f"{len(records)} ページを読み取りました")
 
