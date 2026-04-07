@@ -6,8 +6,6 @@ import json
 import io
 import time
 import pandas as pd
-import openpyxl
-from openpyxl.styles import Font, Alignment
 from PIL import Image
 
 # ── Groq 設定 ─────────────────────────────────────────────────────
@@ -69,44 +67,16 @@ def analyze_receipt(img: Image.Image, retries: int = 3) -> dict:
     return {"日付": "", "店名": "読み取り失敗", "金額": None, "消費税8%": None}
 
 
-# ── Excel生成 ─────────────────────────────────────────────────────
-def build_excel(df: pd.DataFrame) -> bytes:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "現金領収書"
-
-    headers = ["日付", "店名", "金額", "消費税8%"]
-    ws.append(headers)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center")
-
-    for _, row in df.iterrows():
-        ws.append([
-            row.get("日付", ""),
-            row.get("店名", ""),
-            int(row["金額"]) if pd.notna(row.get("金額")) and row.get("金額") != "" else None,
-            int(row["消費税8%"]) if pd.notna(row.get("消費税8%")) and row.get("消費税8%") != "" else None,
-        ])
-
-    n = len(df)
-    ws.cell(row=n + 2, column=1, value="合計").font = Font(bold=True)
-    ws.cell(row=n + 2, column=3, value=f"=SUM(C2:C{n+1})")
-    ws.cell(row=n + 2, column=4, value=f"=SUM(D2:D{n+1})")
-
-    ws.column_dimensions["A"].width = 14
-    ws.column_dimensions["B"].width = 40
-    ws.column_dimensions["C"].width = 14
-    ws.column_dimensions["D"].width = 14
-
+# ── CSV生成 ─────────────────────────────────────────────────────
+def build_csv(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
-    wb.save(buf)
+    df.to_csv(buf, index=False, encoding='utf-8-sig')
     return buf.getvalue()
 
 
 # ── メインUI ─────────────────────────────────────────────────────
-st.set_page_config(page_title="現金領収書 → Excel", layout="wide")
-st.title("現金領収書PDF → Excel 変換")
+st.set_page_config(page_title="現金領収書 → CSV", layout="wide")
+st.title("現金領収書PDF → CSV 変換")
 st.caption("スキャンしたPDFをアップロードすると、日付・店名・金額・消費税8%を読み取ります。")
 
 uploaded = st.file_uploader("PDFファイルをアップロード", type="pdf")
@@ -144,14 +114,14 @@ if uploaded:
         use_container_width=True,
     )
 
-    filename = st.text_input("ファイル名", value="現金領収書一覧.xlsx")
-    if not filename.endswith(".xlsx"):
-        filename += ".xlsx"
+    filename = st.text_input("ファイル名", value="現金領収書一覧.csv")
+    if not filename.endswith(".csv"):
+        filename += ".csv"
 
-    excel_bytes = build_excel(edited)
+    csv_bytes = build_csv(edited)
     st.download_button(
-        label="Excelダウンロード",
-        data=excel_bytes,
+        label="CSVダウンロード",
+        data=csv_bytes,
         file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mime="text/csv",
     )
