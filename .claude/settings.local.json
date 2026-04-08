@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -k -s -X POST https://api.github.com/user/repos -H 'Authorization: token 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' -H 'Content-Type: application/json' -d '{\"name\":\"bank-passbook\",\"private\":false}')",
+      "WebFetch(domain:console.groq.com)",
+      "WebFetch(domain:groq.com)"
+    ]
+  }
+}
