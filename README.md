@@ -1,18 +1,17 @@
-[README.md](https://github.com/user-attachments/files/26524238/README.md)
-# 現金領収書PDF → Excel 変換アプリ
+# 現金領収書PDF → CSV 変換アプリ
 
-スキャンした現金領収書のPDFをアップロードするだけで、日付・店名・金額・消費税8%をExcelに変換するWebアプリです。
+スキャンした現金領収書のPDFをアップロードするだけで、日付・店名・金額・消費税8%をCSVに変換するWebアプリです。
 
-**AI・APIキー不要。Python OCRのみで動作します。**
+**Groq API（llama-4-scout）を使用します。GROQ_API_KEY が必要です。**
 
 ---
 
 ## 機能
 
-- PDFをアップロード → 自動でOCR読み取り
+- PDFをアップロード → 自動でAI読み取り
 - 日付・店名・金額・消費税8% を自動抽出
 - 読み取り結果をブラウザ上で直接編集可能
-- Excelファイル（.xlsx）としてダウンロード
+- CSVファイル（.csv）としてダウンロード
 - 和暦（令和・平成）→ 西暦に自動変換
 
 ---
@@ -22,7 +21,7 @@
 1. アプリを開く
 2. PDFファイルをアップロード
 3. 読み取り結果を確認・修正
-4. ファイル名を入力して「Excelダウンロード」
+4. ファイル名を入力して「CSVダウンロード」
 
 ---
 
@@ -31,30 +30,39 @@
 ### 必要なもの
 
 - Python 3.9以上
-- Tesseract OCR（日本語対応）
 - Poppler
+- Groq APIキー
 
-### Tesseractのインストール
+### Popplerのインストール
 
 **Windows:**
-[tesseract-ocr-w64-setup-5.x.exe](https://github.com/UB-Mannheim/tesseract/wiki) をインストール後、日本語データ（`jpn.traineddata`）を追加。
+[Poppler for Windows](https://github.com/oschwartz10612/poppler-windows/releases) をインストールし、`bin` フォルダにパスを通す。
 
 **Mac:**
 ```bash
-brew install tesseract tesseract-lang
+brew install poppler
 ```
 
 **Linux:**
 ```bash
-sudo apt install tesseract-ocr tesseract-ocr-jpn poppler-utils
+sudo apt install poppler-utils
 ```
 
 ### セットアップ
 
 ```bash
-git clone https://github.com/<your-username>/receipt-excel.git
-cd receipt-excel
+git clone https://github.com/<your-username>/receipt-to-csv-ver2-copy.git
+cd receipt-to-csv-ver2-copy
 pip install -r requirements.txt
+```
+
+`.streamlit/secrets.toml` を作成して APIキー を設定:
+
+```toml
+GROQ_API_KEY = "your-groq-api-key"
+```
+
+```bash
 streamlit run app.py
 ```
 
@@ -65,13 +73,15 @@ streamlit run app.py
 1. このリポジトリをGitHubにプッシュ
 2. [Streamlit Cloud](https://streamlit.io/cloud) でリポジトリを連携
 3. Main file: `app.py` を指定してデプロイ
+4. Secrets に `GROQ_API_KEY` を設定
 
-`packages.txt` により Tesseract と Poppler は自動インストールされます。
+`packages.txt` により Poppler は自動インストールされます。
 
 ---
 
 ## 注意事項
 
-- OCR精度はスキャン品質に依存します
+- AI読み取り精度はスキャン品質に依存します
 - 手書き領収書は読み取り精度が下がる場合があります
 - 読み取り後にテーブルで内容を確認・修正してからダウンロードしてください
+- Groq APIの無料枠にはリクエスト制限があります（制限時は自動リトライします）
