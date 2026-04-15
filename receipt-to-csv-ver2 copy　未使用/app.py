@@ -1,6 +1,7 @@
 import streamlit as st
 from pdf2image import convert_from_bytes
 from groq import Groq
+import google.generativeai as genai
 import base64
 import json
 import io
@@ -8,8 +9,11 @@ import time
 import pandas as pd
 from PIL import Image
 
-# ── Groq 設定 ─────────────────────────────────────────────────────
-client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+# ── クライアント設定 ───────────────────────────────────────────────
+groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+
+genai.configure(api_key=st.secrets["bankpass"])
+gemini_model = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
 
 PROMPT = """この画像は日本の領収書またはレシートです。以下の情報を抽出してJSONで返してください。
 
@@ -34,11 +38,11 @@ def img_to_base64(img: Image.Image) -> str:
 
 
 # ── Groqで1ページ分を解析（リトライあり） ────────────────────────
-def analyze_receipt(img: Image.Image, retries: int = 3) -> dict:
+def analyze_with_groq(img: Image.Image, retries: int = 3) -> dict:
     b64 = img_to_base64(img)
     for attempt in range(retries):
         try:
-            response = client.chat.completions.create(
+            response = groq_client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[{
                     "role": "user",
@@ -67,6 +71,23 @@ def analyze_receipt(img: Image.Image, retries: int = 3) -> dict:
     return {"日付": "", "店名": "読み取り失敗", "金額": None, "消費税8%": None}
 
 
+# ── Geminiで1ページ分を解析 ──────────────────────────────────────
+def analyze_with_gemini(img: Image.Image) -> dict:
+    try:
+        response = gemini_model.generate_content([PROMPT, img])
+        text = response.text.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+        return {
+            "日付": data.get("date", ""),
+            "店名": data.get("store", ""),
+            "金額": data.get("amount"),
+            "消費税8%": data.get("tax8"),
+        }
+    except Exception as e:
+        return {"日付": "", "店名": f"読み取りエラー: {e}", "金額": None, "消費税8%": None}
+
+
 # ── CSV生成 ─────────────────────────────────────────────────────
 def build_csv(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
@@ -78,6 +99,8 @@ def build_csv(df: pd.DataFrame) -> bytes:
 st.set_page_config(page_title="現金領収書 → CSV", layout="wide")
 st.title("現金領収書PDF → CSV 変換")
 st.caption("スキャンしたPDFをアップロードすると、日付・店名・金額・消費税8%を読み取ります。")
+
+api_choice = st.radio("使用するAI", ["Gemini", "Groq"], horizontal=True)
 
 uploaded = st.file_uploader("PDFファイルをアップロード", type="pdf")
 
@@ -92,7 +115,10 @@ if uploaded:
         records = []
         bar = st.progress(0, text="解析中...")
         for i, img in enumerate(images):
-            record = analyze_receipt(img)
+            if api_choice == "Gemini":
+                record = analyze_with_gemini(img)
+            else:
+                record = analyze_with_groq(img)
             records.append(record)
             bar.progress((i + 1) / len(images), text=f"{i+1} / {len(images)} ページ完了")
         bar.empty()
